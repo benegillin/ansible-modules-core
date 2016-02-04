@@ -74,8 +74,6 @@ import time
 import base64
 import syslog
 import signal
-import time
-import signal
 import traceback
 
 syslog.openlog('ansible-%s' % os.path.basename(__file__))
