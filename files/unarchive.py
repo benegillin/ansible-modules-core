@@ -194,27 +194,21 @@ class ZipArchive(object):
             pcs = line.split()
             if len(pcs) != 8: continue
 
-            type = pcs[0][0]
+            ftype = pcs[0][0]
             permstr = pcs[0][1:10]
             size = int(pcs[3])
             name = pcs[7]
 
             ### Bug in unzip output translates MS-DOS file attributes to incorrect string
-            if permstr == 'rw----':
-                if name[-1] == '/':
-                    permstr = 'rwxr-xr-x'
-                else:
-                    permstr = 'rw-r--r--'
+            if len(permstr) == 6:
+                if permstr == 'rw----':
+                    permstr = 'rw-rw-r--'
+                elif permstr == 'rwx---':
+                    permstr = 'rwxrwxr-x'
 
             ### Test string conformity
             if len(permstr) != 9 or not ZIP_FILE_MODE_RE.match(permstr):
                 raise UnarchiveError('ZIP info perm format incorrect, %s' % permstr)
-
-            ### Discard the original type as it has been proven unreliable
-            if name[-1] == '/':
-                type = 'd'
-            else:
-                type = '-'
 
 #            err += "%s%s %10d %s\n" % (type, permstr, size, name)
             dest = os.path.join(self.dest, name)
@@ -225,14 +219,19 @@ class ZipArchive(object):
                 diff += 'Path %s is missing, %s\n' % (dest, e)
                 continue
 
-            if type == 'd' and not stat.S_ISDIR(st.st_mode):
+            if ftype == 'd' and not stat.S_ISDIR(st.st_mode):
                 unarchived = False
                 diff += 'File %s already exists, but not as a directory\n' % dest
                 continue
 
-            if type == '-' and not stat.S_ISREG(st.st_mode):
+            if ftype == '-' and not stat.S_ISREG(st.st_mode):
                 unarchived = False
                 diff += 'Directory %s already exists, but not as a regular file\n' % dest
+                continue
+
+            if ftype == 'l' and not stat.S_ISLNK(st.st_mode):
+                unarchived = False
+                diff += 'Directory %s already exists, but not as a symlink\n' % dest
                 continue
 
             dt_object = datetime.datetime(*(time.strptime(pcs[6], '%Y%m%d.%H%M%S')[0:6]))
@@ -240,7 +239,7 @@ class ZipArchive(object):
 
             # We do not compare directory mtime, since it changes with updates
             if self.module.params['keep_newer']:
-               if stat.S_ISREG(st.st_mode) and timestamp > st.st_mtime:
+                if stat.S_ISREG(st.st_mode) and timestamp > st.st_mtime:
                     unarchived = False
                     err += 'File %s is older, replacing file\n' % dest
                 elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
@@ -372,9 +371,11 @@ class TgzArchive(object):
         old_out = out
         out = ''
         for line in old_out.splitlines() + err.splitlines():
+            # FIXME: if we are extracting as a user, we should not assume a different user is a change
             if not self.file_args['owner'] and OWNER_DIFF_RE.search(line):
                 out += line + '\n'
-            if not self.file_args['owner'] and GROUP_DIFF_RE.search(line):
+            # FIXME: if we are extracting as a user, we should not assume a different group is a change
+            if not self.file_args['group'] and GROUP_DIFF_RE.search(line):
                 out += line + '\n'
             if not self.file_args['mode'] and MODE_DIFF_RE.search(line):
                 out += line + '\n'
@@ -475,7 +476,7 @@ def main():
             module.fail_json(msg="Source '%s' failed to transfer" % src)
         # If copy=false, and src= contains ://, try and download the file to a temp directory.
         elif '://' in src:
-            tempdir = os.path.dirname(__file__)
+            tempdir = os.path.dirname(os.path.realpath(__file__))
             package = os.path.join(tempdir, str(src.rsplit('/', 1)[1]))
             try:
                 rsp, info = fetch_url(module, src)
