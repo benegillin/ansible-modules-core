@@ -4,6 +4,7 @@
 # (c) 2012, Michael DeHaan <michael.dehaan@gmail.com>
 # (c) 2013, Dylan Martin <dmartin@seattlecentral.edu>
 # (c) 2015, Toshio Kuratomi <tkuratomi@ansible.com>
+# (c) 2016, Dag Wieers <dag@wieers.com>
 #
 # This file is part of Ansible
 #
@@ -59,17 +60,39 @@ options:
     choices: [ "yes", "no" ]
     default: "no"
     version_added: "2.0"
+  exclude:
+    description:
+      - List the directory and file entries that you would like to exclude from the unarchive action.
+    required: false
+    default: []
+    version_added: "2.1"
+  keep_newer:
+    description:
+      - Do not replace existing files that are newer than files from the archive.
+    required: false
+    default: no
+    version_added: "2.1"
+  extra_opts:
+    description:
+      - Specify additional options by passing in an array.
+    default:
+    required: false
+    version_added: "2.1"
 author: "Dylan Martin (@pileofrogs)"
 todo:
     - detect changed/unchanged for .zip files
+    - implement CRC32 support for .zip files
     - handle common unarchive args, like preserve owner/timestamp etc...
+    - rewrite gtar implementation wrt. file_common_args (and owner/group/mode)
+    - re-implement the zip support using native zipfile module
+    - implement check-mode
+    - implement diff-mode
 notes:
-    - requires C(tar)/C(unzip) command on target host
+    - requires C(gtar)/C(unzip) command on target host
     - can handle I(gzip), I(bzip2) and I(xz) compressed as well as uncompressed tar files
     - detects type of archive automatically
     - uses tar's C(--diff arg) to calculate if changed or not. If this C(arg) is not
       supported, it will always unpack the archive
-    - does not detect if a .zip file is different from destination - always unzips
     - existing files/directories in the destination which are not in the archive
       are not touched.  This is the same behavior as a normal archive extraction
     - existing files/directories in the destination which are not in the archive
@@ -89,11 +112,21 @@ EXAMPLES = '''
 
 import re
 import os
+import stat
+import pwd
+import grp
+import datetime
+import time
 from zipfile import ZipFile
 
 # String from tar that shows the tar contents are different from the
 # filesystem
-DIFFERENCE_RE = re.compile(r': (.*) differs$')
+OWNER_DIFF_RE = re.compile(r': Uid differs$')
+GROUP_DIFF_RE = re.compile(r': Gid differs$')
+MODE_DIFF_RE = re.compile(r': Mode differs$')
+MODE_DIFF_RE = re.compile(r' is newer or same age.$')
+MISSING_FILE_RE = re.compile(r': Warning: Cannot stat: No such file or directory$')
+ZIP_FILE_MODE_RE = re.compile(r'([r-][w-][stx-]){3}')
 # When downloading an archive, how much of the archive to download before
 # saving to a tempfile (64k)
 BUFSIZE = 65536
@@ -104,12 +137,28 @@ class UnarchiveError(Exception):
 # class to handle .zip files
 class ZipArchive(object):
 
-    def __init__(self, src, dest, module):
+    def __init__(self, src, dest, file_args, module):
         self.src = src
         self.dest = dest
+        self.file_args = file_args
+        self.opts = module.params['extra_opts']
         self.module = module
+        self.excludes = module.params['exclude']
         self.cmd_path = self.module.get_bin_path('unzip')
         self._files_in_archive = []
+
+    def _permstr_to_octal(self, modestr):
+        ''' Convert a Unix permission string (rw-r--r--) into a mode (0644) '''
+        revstr = modestr[::-1]
+        mode = 0
+        for j in range(0, 3):
+            for i in range(0, 3):
+                if revstr[i+3*j] in ['r', 'w', 'x', 's', 't']:
+                    mode += 2**(i+3*j)
+        # The unzip utility does not support setting the stST bits
+#                if revstr[i+3*j] in ['s', 't', 'S', 'T' ]:
+#                    mode += 2**(9+j)
+        return mode
 
     @property
     def files_in_archive(self, force_refresh=False):
@@ -124,11 +173,129 @@ class ZipArchive(object):
 
         return self._files_in_archive
 
-    def is_unarchived(self, mode, owner, group):
-        return dict(unarchived=False)
+    def is_unarchived(self):
+        # TODO: It is possible to extract the CRC32 of each file and compare that
+        #       Problem is that parsing the unzip -Zv info is going to be ugly
+        cmd = '%s -ZT -s "%s"' % (self.cmd_path, self.src)
+        if self.excludes:
+            cmd += '-x ' + ' '.join(self.excludes)
+        rc, out, err = self.module.run_command(cmd)
+
+        old_out = out
+        diff = ''
+        if rc == 0:
+            output = ''
+            unarchived = True
+        else:
+            output = out
+            unarchived = False
+
+        for line in old_out.splitlines():
+            pcs = line.split()
+            if len(pcs) != 8: continue
+
+            type = pcs[0][0]
+            permstr = pcs[0][1:10]
+            size = int(pcs[3])
+            name = pcs[7]
+
+            ### Bug in unzip output translates MS-DOS file attributes to incorrect string
+            if permstr == 'rw----':
+                if name[-1] == '/':
+                    permstr = 'rwxr-xr-x'
+                else:
+                    permstr = 'rw-r--r--'
+
+            ### Test string conformity
+            if len(permstr) != 9 or not ZIP_FILE_MODE_RE.match(permstr):
+                raise UnarchiveError('ZIP info perm format incorrect, %s' % permstr)
+
+            ### Discard the original type as it has been proven unreliable
+            if name[-1] == '/':
+                type = 'd'
+            else:
+                type = '-'
+
+#            err += "%s%s %10d %s\n" % (type, permstr, size, name)
+            dest = os.path.join(self.dest, name)
+            try:
+                st = os.lstat(dest)
+            except Exception as e:
+                unarchived = False
+                diff += 'Path %s is missing, %s\n' % (dest, e)
+                continue
+
+            if type == 'd' and not stat.S_ISDIR(st.st_mode):
+                unarchived = False
+                diff += 'File %s already exists, but not as a directory\n' % dest
+                continue
+
+            if type == '-' and not stat.S_ISREG(st.st_mode):
+                unarchived = False
+                diff += 'Directory %s already exists, but not as a regular file\n' % dest
+                continue
+
+            dt_object = datetime.datetime(*(time.strptime(pcs[6], '%Y%m%d.%H%M%S')[0:6]))
+            timestamp = time.mktime(dt_object.timetuple())
+
+            # We do not compare directory mtime, since it changes with updates
+            if self.module.params['keep_newer']:
+               if stat.S_ISREG(st.st_mode) and timestamp > st.st_mtime:
+                    unarchived = False
+                    err += 'File %s is older, replacing file\n' % dest
+                elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
+                    # Add to excluded files, ignore other changes
+                    out += 'File %s is newer, excluding file\n' % dest
+                    self.excludes.append(name)
+                    continue
+            else:
+                if stat.S_ISREG(st.st_mode) and timestamp != st.st_mtime:
+                    unarchived = False
+                    diff += 'File %s differs in mtime (%f vs %f)\n' % (dest, timestamp, st.st_mtime)
+
+            if stat.S_ISREG(st.st_mode) and size != st.st_size:
+                unarchived = False
+                diff += 'File %s differs in size (%d vs %d)\n' % (dest, size, st.st_size)
+
+            mode = self._permstr_to_octal(permstr)
+
+#            diff += "Path %s compare %o vs %o\n" % (name, mode, stat.S_IMODE(st.st_mode))
+            if self.file_args['mode']:
+                if self.file_args['mode'] != stat.S_IMODE(st.st_mode):
+                    unarchived = False
+                    diff += 'Path %s differs in permissions (%o vs %o)\n' % (dest, self.file_args['mode'], stat.S_IMODE(st.st_mode))
+            else:
+                if mode != stat.S_IMODE(st.st_mode):
+                    unarchived = False
+                    diff += 'Path %s differs in permissions (%o vs %o)\n' % (dest, mode, stat.S_IMODE(st.st_mode))
+
+            if self.file_args['owner']:
+                try:
+                    owner = pwd.getpwuid(st.st_uid).pw_name
+                except Exception as e:
+                    owner = st.st_uid
+                if self.file_args['owner'] != owner:
+                    unarchived = False
+                    diff += 'Path %s is owned by user %s, not by user %s as expected\n' % (dest, owner, self.file_args['owner'])
+
+            if self.file_args['group']:
+                try:
+                    group = pwd.getpwuid(st.st_uid).pw_name
+                except Exception as e:
+                    group = st.st_uid
+                if self.file_args['group'] != group:
+                    unarchived = False
+                    diff += 'Path %s is owned by group %s, not by group %s as expected\n' % (dest, group, self.file_args['group'])
+
+        return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
 
     def unarchive(self):
-        cmd = '%s -o "%s" -d "%s"' % (self.cmd_path, self.src, self.dest)
+        cmd = '%s -o "%s"' % (self.cmd_path, self.src)
+        if self.opts:
+            cmd += ' ' + ' '.join(self.opts)
+        if self.excludes:
+            cmd += ' -x ' + ' '.join(self.excludes)
+        cmd += ' -d "%s"' % self.dest
         rc, out, err = self.module.run_command(cmd)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
 
@@ -145,10 +312,13 @@ class ZipArchive(object):
 # class to handle gzipped tar files
 class TgzArchive(object):
 
-    def __init__(self, src, dest, module):
+    def __init__(self, src, dest, file_args, module):
         self.src = src
         self.dest = dest
+        self.file_args = file_args
+        self.opts = module.params['extra_opts']
         self.module = module
+        self.excludes = [ path.rstrip('/') for path in self.module.params['exclude']]
         # Prefer gtar (GNU tar) as it supports the compression options -zjJ
         self.cmd_path = self.module.get_bin_path('gtar', None)
         if not self.cmd_path:
@@ -162,49 +332,73 @@ class TgzArchive(object):
         if self._files_in_archive and not force_refresh:
             return self._files_in_archive
 
-        cmd = '%s -t%sf "%s"' % (self.cmd_path, self.zipflag, self.src)
+        cmd = '%s -t%s' % (self.cmd_path, self.zipflag)
+        if self.opts:
+            cmd += ' ' + ' '.join(self.opts)
+        if self.excludes:
+            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+        cmd += ' -f "%s"' % self.src
         rc, out, err = self.module.run_command(cmd)
         if rc != 0:
             raise UnarchiveError('Unable to list files in the archive')
 
         for filename in out.splitlines():
-            if filename:
+            if filename and filename not in self.excludes:
                 self._files_in_archive.append(filename)
         return self._files_in_archive
 
-    def is_unarchived(self, mode, owner, group):
-        cmd = '%s -C "%s" --diff -%sf "%s"' % (self.cmd_path, self.dest, self.zipflag, self.src)
+    def is_unarchived(self):
+        cmd = '%s -C "%s" -d%s' % (self.cmd_path, self.dest, self.zipflag)
+        if self.opts:
+            cmd += ' ' + ' '.join(self.opts)
+        if self.file_args['owner']:
+            cmd += ' --owner="%s"' % self.file_args['owner']
+        if self.file_args['group']:
+            cmd += ' --group="%s"' % self.file_args['group']
+        if self.file_args['mode']:
+            cmd += ' --mode="%s"' % self.file_args['mode']
+        if self.module.params['keep_newer']:
+            cmd += ' --keep-newer-files'
+        if self.excludes:
+            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+        cmd += ' -f "%s"' % self.src
         rc, out, err = self.module.run_command(cmd)
-        unarchived = (rc == 0)
-        if not unarchived:
-            # Check whether the differences are in something that we're
-            # setting anyway
+        diff = ''
+        # Check whether the differences are in something that we're
+        # setting anyway
 
-            # What will be set
-            to_be_set = set()
-            for perm in (('Mode', mode), ('Gid', group), ('Uid', owner)):
-                if perm[1] is not None:
-                    to_be_set.add(perm[0])
-
-            # What is different
-            changes = set()
-            if err:
-                # Assume changes if anything returned on stderr
-                # * Missing files are known to trigger this
-                return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd)
-            for line in out.splitlines():
-                match = DIFFERENCE_RE.search(line)
-                if not match:
-                    # Unknown tar output. Assume we have changes
-                    return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd)
-                changes.add(match.groups()[0])
-
-            if changes and changes.issubset(to_be_set):
-                unarchived = True
-        return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd)
+        # What is different
+        unarchived = True
+        old_out = out
+        out = ''
+        for line in old_out.splitlines() + err.splitlines():
+            if not self.file_args['owner'] and OWNER_DIFF_RE.search(line):
+                out += line + '\n'
+            if not self.file_args['owner'] and GROUP_DIFF_RE.search(line):
+                out += line + '\n'
+            if not self.file_args['mode'] and MODE_DIFF_RE.search(line):
+                out += line + '\n'
+            if MISSING_FILE_RE.search(line):
+                out += line + '\n'
+        if out:
+            unarchived = False
+        return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
 
     def unarchive(self):
-        cmd = '%s -x%sf "%s"' % (self.cmd_path, self.zipflag, self.src)
+        cmd = '%s -C "%s" -x%s' % (self.cmd_path, self.dest, self.zipflag)
+        if self.opts:
+            cmd += ' ' + ' '.join(self.opts)
+        if self.module.params['keep_newer']:
+            cmd += ' --keep-newer-files'
+        if self.file_args['owner']:
+            cmd += ' --owner="%s"' % self.file_args['owner']
+        if self.file_args['group']:
+            cmd += ' --group="%s"' % self.file_args['group']
+        if self.file_args['mode']:
+            cmd += ' --mode="%s"' % self.file_args['mode']
+        if self.excludes:
+            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+        cmd += ' -f "%s"' % (self.src)
         rc, out, err = self.module.run_command(cmd, cwd=self.dest)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
 
@@ -224,30 +418,30 @@ class TgzArchive(object):
 
 # class to handle tar files that aren't compressed
 class TarArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, file_args, module):
+        super(TarArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = ''
 
 
 # class to handle bzip2 compressed tar files
 class TarBzipArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarBzipArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, file_args, module):
+        super(TarBzipArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = 'j'
 
 
 # class to handle xz compressed tar files
 class TarXzArchive(TgzArchive):
-    def __init__(self, src, dest, module):
-        super(TarXzArchive, self).__init__(src, dest, module)
+    def __init__(self, src, dest, file_args, module):
+        super(TarXzArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = 'J'
 
 
 # try handlers in order and return the one that works or bail if none work
-def pick_handler(src, dest, module):
+def pick_handler(src, dest, file_args, module):
     handlers = [TgzArchive, ZipArchive, TarArchive, TarBzipArchive, TarXzArchive]
     for handler in handlers:
-        obj = handler(src, dest, module)
+        obj = handler(src, dest, file_args, module)
         if obj.can_handle_archive():
             return obj
     module.fail_json(msg='Failed to find handler for "%s". Make sure the required command to extract the file is installed.' % src)
@@ -257,21 +451,24 @@ def main():
     module = AnsibleModule(
         # not checking because of daisy chain to file module
         argument_spec = dict(
-            src               = dict(required=True, type='path'),
-            original_basename = dict(required=False, type='str'), # used to handle 'dest is a directory' via template, a slight hack
-            dest              = dict(required=True, type='path'),
+            src               = dict(required=True),
+            original_basename = dict(required=False), # used to handle 'dest is a directory' via template, a slight hack
+            dest              = dict(required=True),
             copy              = dict(default=True, type='bool'),
-            creates           = dict(required=False, type='path'),
-            list_files          = dict(required=False, default=False, type='bool'),
+            creates           = dict(required=False),
+            list_files        = dict(required=False, default=False, type='bool'),
+            keep_newer        = dict(required=False, default=False, type='bool'),
+            exclude           = dict(requited=False, default=[], type='list'),
+            extra_opts        = dict(required=False, default=[], type='list'),
         ),
-        add_file_common_args=True,
+        add_file_common_args = True,
+#        supports_check_mode = True,
     )
 
-    src    = module.params['src']
-    dest   = module.params['dest']
-    copy   = module.params['copy']
+    src    = os.path.expanduser(module.params['src'])
+    dest   = os.path.expanduser(module.params['dest'])
     file_args = module.load_file_common_arguments(module.params)
-
+    copy   = module.params['copy']
     # did tar file arrive?
     if not os.path.exists(src):
         if copy:
@@ -314,13 +511,12 @@ def main():
     if not os.path.isdir(dest):
         module.fail_json(msg="Destination '%s' is not a directory" % dest)
 
-    handler = pick_handler(src, dest, module)
+    handler = pick_handler(src, dest, file_args, module)
 
     res_args = dict(handler=handler.__class__.__name__, dest=dest, src=src)
 
     # do we need to do unpack?
-    res_args['check_results'] = handler.is_unarchived(file_args['mode'],
-            file_args['owner'], file_args['group'])
+    res_args['check_results'] = handler.is_unarchived()
     if res_args['check_results']['unarchived']:
         res_args['changed'] = False
     else:
@@ -344,6 +540,8 @@ def main():
 
     if module.params['list_files']:
         res_args['files'] = handler.files_in_archive
+
+#    res_args['diff'] = { 'prepared' : res_args['check_results']['diff'] }
 
     module.exit_json(**res_args)
 
