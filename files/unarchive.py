@@ -144,6 +144,7 @@ class ZipArchive(object):
         self.opts = module.params['extra_opts']
         self.module = module
         self.excludes = module.params['exclude']
+        self.includes = []
         self.cmd_path = self.module.get_bin_path('unzip')
         self._files_in_archive = []
 
@@ -165,12 +166,17 @@ class ZipArchive(object):
         if self._files_in_archive and not force_refresh:
             return self._files_in_archive
 
+        self._files_in_archive = []
         archive = ZipFile(self.src)
         try:
-            self._files_in_archive = archive.namelist()
+            for member in archive.namelist():
+                if member not in self.excludes:
+                    self._files_in_archive.append(member)
         except:
+            archive.close()
             raise UnarchiveError('Unable to list files in the archive')
 
+        archive.close()
         return self._files_in_archive
 
     def is_unarchived(self):
@@ -191,48 +197,71 @@ class ZipArchive(object):
             unarchived = False
 
         for line in old_out.splitlines():
+            change = False
+
             pcs = line.split()
             if len(pcs) != 8: continue
 
             ftype = pcs[0][0]
             permstr = pcs[0][1:10]
             size = int(pcs[3])
-            name = pcs[7]
+            path = pcs[7]
 
-            ### Bug in unzip output translates MS-DOS file attributes to incorrect string
+            # Skip excluded files
+            if path in self.excludes:
+                continue
+
+            # Itemized change requires L for symlink
+            if ftype == 'l':
+                ftype = 'L'
+            elif ftype == '-':
+                ftype = 'f'
+
+            # Bug in unzip output translates MS-DOS file attributes to incorrect string
             if len(permstr) == 6:
                 if permstr == 'rw----':
                     permstr = 'rw-rw-r--'
                 elif permstr == 'rwx---':
                     permstr = 'rwxrwxr-x'
 
-            ### Test string conformity
+            # Test string conformity
             if len(permstr) != 9 or not ZIP_FILE_MODE_RE.match(permstr):
                 raise UnarchiveError('ZIP info perm format incorrect, %s' % permstr)
 
-#            err += "%s%s %10d %s\n" % (type, permstr, size, name)
-            dest = os.path.join(self.dest, name)
+#            err += "%s%s %10d %s\n" % (ftype, permstr, size, path)
+            dest = os.path.join(self.dest, path)
             try:
                 st = os.lstat(dest)
             except Exception as e:
-                unarchived = False
-                diff += 'Path %s is missing, %s\n' % (dest, e)
+                change = True
+                self.includes.append(path)
+                err += 'Path %s is missing\n' % path
+                diff += '>%s......... %s\n' % (ftype, path)
                 continue
 
             if ftype == 'd' and not stat.S_ISDIR(st.st_mode):
-                unarchived = False
-                diff += 'File %s already exists, but not as a directory\n' % dest
+                change = True
+                self.includes.append(path)
+                err += 'File %s already exists, but not as a directory\n' % path
+                diff += 'c%s......... %s\n' % (ftype, path)
                 continue
 
-            if ftype == '-' and not stat.S_ISREG(st.st_mode):
+            if ftype == 'f' and not stat.S_ISREG(st.st_mode):
+                change = True
                 unarchived = False
-                diff += 'Directory %s already exists, but not as a regular file\n' % dest
+                self.includes.append(path)
+                err += 'Directory %s already exists, but not as a regular file\n' % path
+                diff += 'c%s......... %s\n' % (ftype, path)
                 continue
 
-            if ftype == 'l' and not stat.S_ISLNK(st.st_mode):
-                unarchived = False
-                diff += 'Directory %s already exists, but not as a symlink\n' % dest
+            if ftype == 'L' and not stat.S_ISLNK(st.st_mode):
+                change = True
+                self.includes.append(path)
+                err += 'Directory %s already exists, but not as a symlink\n' % path
+                diff += 'c%s......... %s\n' % (ftype, path)
                 continue
+
+            itemized = bytearray('.%s.........' % ftype)
 
             dt_object = datetime.datetime(*(time.strptime(pcs[6], '%Y%m%d.%H%M%S')[0:6]))
             timestamp = time.mktime(dt_object.timetuple())
@@ -240,33 +269,39 @@ class ZipArchive(object):
             # We do not compare directory mtime, since it changes with updates
             if self.module.params['keep_newer']:
                 if stat.S_ISREG(st.st_mode) and timestamp > st.st_mtime:
-                    unarchived = False
-                    err += 'File %s is older, replacing file\n' % dest
+                    change = True
+                    self.includes.append(path)
+                    err += 'File %s is older, replacing file\n' % path
+                    itemized[4] = 't'
                 elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
                     # Add to excluded files, ignore other changes
-                    out += 'File %s is newer, excluding file\n' % dest
-                    self.excludes.append(name)
+                    out += 'File %s is newer, excluding file\n' % path
                     continue
             else:
                 if stat.S_ISREG(st.st_mode) and timestamp != st.st_mtime:
-                    unarchived = False
-                    diff += 'File %s differs in mtime (%f vs %f)\n' % (dest, timestamp, st.st_mtime)
+                    change = True
+                    self.includes.append(path)
+                    err += 'File %s differs in mtime (%f vs %f)\n' % (path, timestamp, st.st_mtime)
+                    itemized[4] = 't'
 
             if stat.S_ISREG(st.st_mode) and size != st.st_size:
-                unarchived = False
-                diff += 'File %s differs in size (%d vs %d)\n' % (dest, size, st.st_size)
+                change = True
+                err += 'File %s differs in size (%d vs %d)\n' % (path, size, st.st_size)
+                itemized[3] = 's'
 
             mode = self._permstr_to_octal(permstr)
 
-#            diff += "Path %s compare %o vs %o\n" % (name, mode, stat.S_IMODE(st.st_mode))
+#            diff += "Path %s compare %o vs %o\n" % (path, mode, stat.S_IMODE(st.st_mode))
             if self.file_args['mode']:
                 if self.file_args['mode'] != stat.S_IMODE(st.st_mode):
-                    unarchived = False
-                    diff += 'Path %s differs in permissions (%o vs %o)\n' % (dest, self.file_args['mode'], stat.S_IMODE(st.st_mode))
+                    change = True
+                    err += 'Path %s differs in permissions (%o vs %o)\n' % (path, self.file_args['mode'], stat.S_IMODE(st.st_mode))
+                    itemized[5] = 'p'
             else:
                 if mode != stat.S_IMODE(st.st_mode):
-                    unarchived = False
-                    diff += 'Path %s differs in permissions (%o vs %o)\n' % (dest, mode, stat.S_IMODE(st.st_mode))
+                    change = True
+                    itemized[5] = 'p'
+                    err += 'Path %s differs in permissions (%o vs %o)\n' % (path, mode, stat.S_IMODE(st.st_mode))
 
             if self.file_args['owner']:
                 try:
@@ -274,8 +309,9 @@ class ZipArchive(object):
                 except Exception as e:
                     owner = st.st_uid
                 if self.file_args['owner'] != owner:
-                    unarchived = False
-                    diff += 'Path %s is owned by user %s, not by user %s as expected\n' % (dest, owner, self.file_args['owner'])
+                    change = True
+                    err += 'Path %s is owned by user %s, not by user %s as expected\n' % (path, owner, self.file_args['owner'])
+                    itemized[6] = 'o'
 
             if self.file_args['group']:
                 try:
@@ -283,8 +319,17 @@ class ZipArchive(object):
                 except Exception as e:
                     group = st.st_uid
                 if self.file_args['group'] != group:
-                    unarchived = False
-                    diff += 'Path %s is owned by group %s, not by group %s as expected\n' % (dest, group, self.file_args['group'])
+                    change = True
+                    err += 'Path %s is owned by group %s, not by group %s as expected\n' % (path, group, self.file_args['group'])
+                    itemized[6] = 'g'
+
+            if change:
+                if path not in self.includes:
+                    self.includes.append(path)
+                diff += '%s %s\n' % (itemized, path)
+
+        if self.includes:
+            unarchived = False
 
         return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
 
@@ -294,6 +339,8 @@ class ZipArchive(object):
             cmd += ' ' + ' '.join(self.opts)
         if self.excludes:
             cmd += ' -x ' + ' '.join(self.excludes)
+        if self.includes:
+            cmd += ' ' + ' '.join(self.excludes)
         cmd += ' -d "%s"' % self.dest
         rc, out, err = self.module.run_command(cmd)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
@@ -383,7 +430,7 @@ class TgzArchive(object):
                 out += line + '\n'
         if out:
             unarchived = False
-        return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
+        return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd)
 
     def unarchive(self):
         cmd = '%s -C "%s" -x%s' % (self.cmd_path, self.dest, self.zipflag)
@@ -531,18 +578,21 @@ def main():
         else:
             res_args['changed'] = True
 
-    # do we need to change perms?
-    for filename in handler.files_in_archive:
-        file_args['path'] = os.path.join(dest, filename)
-        try:
-            res_args['changed'] = module.set_fs_attributes_if_different(file_args, res_args['changed'])
-        except (IOError, OSError), e:
-            module.fail_json(msg="Unexpected error when accessing exploded file: %s" % str(e))
+    # Run only if we found differences (idempotence) or diff was missing
+    if res_args['check_results'].get('diff', True):
+        # do we need to change perms?
+        for filename in handler.files_in_archive:
+            file_args['path'] = os.path.join(dest, filename)
+            try:
+                res_args['changed'] = module.set_fs_attributes_if_different(file_args, res_args['changed'])
+            except (IOError, OSError), e:
+                module.fail_json(msg="Unexpected error when accessing exploded file: %s" % str(e))
 
     if module.params['list_files']:
         res_args['files'] = handler.files_in_archive
 
-#    res_args['diff'] = { 'prepared' : res_args['check_results']['diff'] }
+    if res_args['check_results'].get('diff', False):
+        res_args['diff'] = { 'prepared' : res_args['check_results']['diff'] }
 
     module.exit_json(**res_args)
 
