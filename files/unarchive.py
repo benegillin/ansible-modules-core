@@ -236,14 +236,14 @@ class ZipArchive(object):
                 change = True
                 self.includes.append(path)
                 err += 'Path %s is missing\n' % path
-                diff += '>%s......... %s\n' % (ftype, path)
+                diff += '>%s++++++.?? %s\n' % (ftype, path)
                 continue
 
             if ftype == 'd' and not stat.S_ISDIR(st.st_mode):
                 change = True
                 self.includes.append(path)
                 err += 'File %s already exists, but not as a directory\n' % path
-                diff += 'c%s......... %s\n' % (ftype, path)
+                diff += 'c%s++++++.?? %s\n' % (ftype, path)
                 continue
 
             if ftype == 'f' and not stat.S_ISREG(st.st_mode):
@@ -251,17 +251,17 @@ class ZipArchive(object):
                 unarchived = False
                 self.includes.append(path)
                 err += 'Directory %s already exists, but not as a regular file\n' % path
-                diff += 'c%s......... %s\n' % (ftype, path)
+                diff += 'c%s++++++.?? %s\n' % (ftype, path)
                 continue
 
             if ftype == 'L' and not stat.S_ISLNK(st.st_mode):
                 change = True
                 self.includes.append(path)
                 err += 'Directory %s already exists, but not as a symlink\n' % path
-                diff += 'c%s......... %s\n' % (ftype, path)
+                diff += 'c%s++++++.?? %s\n' % (ftype, path)
                 continue
 
-            itemized = bytearray('.%s.........' % ftype)
+            itemized = bytearray('.%s.......??' % ftype)
 
             dt_object = datetime.datetime(*(time.strptime(pcs[6], '%Y%m%d.%H%M%S')[0:6]))
             timestamp = time.mktime(dt_object.timetuple())
