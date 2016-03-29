@@ -256,8 +256,10 @@ class ZipArchive(object):
             pcs = line.split()
             if len(pcs) != 8: continue
 
-            ftype = pcs[0][0]
+            ztype = pcs[0][0]
             permstr = pcs[0][1:10]
+            version = pcs[0][1]
+            ostype = pcs[0][2]
             size = int(pcs[3])
             path = pcs[7]
 
@@ -268,19 +270,21 @@ class ZipArchive(object):
 
             # Itemized change requires L for symlink
             if path[-1] == '/':
-                if ftype != 'd':
-                    err += 'Path %s incorrectly tagged as "%s", but is a directory.\n' % (path, ftype)
+                if ztype != 'd':
+                    err += 'Path %s incorrectly tagged as "%s", but is a directory.\n' % (path, ztype)
                 ftype = 'd'
-            elif ftype == 'l':
+            elif ztype == 'l':
                 ftype = 'L'
-            elif ftype == '-':
+            elif ztype == '-':
+                ftype = 'f'
+            elif ztype == '?':
                 ftype = 'f'
 
             # Some files may be storing FAT permissions, not Unix permissions
             if len(permstr) == 6:
-                if ftype == 'd':
+                if path[-1] == '/':
                     permstr = 'rwxrwxrwx'
-                elif ftype == 'f':
+                else:
                     permstr = 'rw-rw-rw-'
 
             # Test string conformity
@@ -288,7 +292,7 @@ class ZipArchive(object):
                 raise UnarchiveError('ZIP info perm format incorrect, %s' % permstr)
 
             # DEBUG
-#            err += "%s%s %10d %s\n" % (ftype, permstr, size, path)
+#            err += "%s%s %10d %s\n" % (ztype, permstr, size, path)
 
             dest = os.path.join(self.dest, path)
             try:
@@ -350,8 +354,13 @@ class ZipArchive(object):
                 err += 'File %s differs in size (%d vs %d)\n' % (path, size, st.st_size)
                 itemized[3] = 's'
 
+            # Do not handle permissions of symlinks
             if ftype != 'L':
-                mode = self._permstr_to_octal(permstr, umask)
+                # Only special files require no umask-handling
+                if ztype == '?':
+                    mode = self._permstr_to_octal(permstr, 0)
+                else:
+                    mode = self._permstr_to_octal(permstr, umask)
                 if self.file_args['mode'] and  self.file_args['mode'] != stat.S_IMODE(st.st_mode):
                     change = True
                     err += 'Path %s differs in permissions (%o vs %o)\n' % (path, self.file_args['mode'], stat.S_IMODE(st.st_mode))
