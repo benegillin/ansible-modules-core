@@ -297,7 +297,7 @@ class ZipArchive(object):
             dest = os.path.join(self.dest, path)
             try:
                 st = os.lstat(dest)
-            except Exception as e:
+            except:
                 change = True
                 self.includes.append(path)
                 err += 'Path %s is missing\n' % path
@@ -374,7 +374,7 @@ class ZipArchive(object):
             owner = uid = None
             try:
                 owner = pwd.getpwuid(st.st_uid).pw_name
-            except Exception as e:
+            except:
                 uid = st.st_uid
 
             # If we are not root and requested owner is not our user, fail
