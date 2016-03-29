@@ -404,10 +404,11 @@ class ZipArchive(object):
         cmd = '%s -o "%s"' % (self.cmd_path, self.src)
         if self.opts:
             cmd += ' ' + ' '.join(self.opts)
-        if self.excludes:
-            cmd += ' -x ' + ' '.join(self.excludes)
         if self.includes:
-            cmd += ' ' + ' '.join(self.excludes)
+            cmd += ' ' + ' '.join(self.includes)
+        # We don't need to handle excluded files, since we simply do not include them
+#        if self.excludes:
+#            cmd += ' -x ' + ' '.join(self.excludes)
         cmd += ' -d "%s"' % self.dest
         rc, out, err = self.module.run_command(cmd)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
