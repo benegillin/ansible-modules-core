@@ -184,16 +184,15 @@ class ZipArchive(object):
         #       Problem is that parsing the unzip -Zv info is going to be ugly
         cmd = '%s -ZT -s "%s"' % (self.cmd_path, self.src)
         if self.excludes:
-            cmd += '-x ' + ' '.join(self.excludes)
+            cmd += ' -x ' + ' '.join(self.excludes)
         rc, out, err = self.module.run_command(cmd)
 
         old_out = out
         diff = ''
+        out = ''
         if rc == 0:
-            output = ''
             unarchived = True
         else:
-            output = out
             unarchived = False
 
         for line in old_out.splitlines():
@@ -209,6 +208,7 @@ class ZipArchive(object):
 
             # Skip excluded files
             if path in self.excludes:
+                out += 'Path %s is excluded on request\n' % path
                 continue
 
             # Itemized change requires L for symlink
