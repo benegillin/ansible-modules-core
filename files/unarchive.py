@@ -212,12 +212,16 @@ class ZipArchive(object):
                 continue
 
             # Itemized change requires L for symlink
-            if ftype == 'l':
+            if path[-1] == '/':
+                if ftype != 'd':
+                    err += 'Path %s incorrectly tagged as "%s", but is a directory.' % (path, ftype)
+                ftype = 'd'
+            elif ftype == 'l':
                 ftype = 'L'
             elif ftype == '-':
                 ftype = 'f'
 
-            # Bug in unzip output translates MS-DOS file attributes to incorrect string
+            # Some files may be storing FAT permissions, not Unix permissions
             if len(permstr) == 6:
                 if permstr == 'rw----':
                     permstr = 'rw-rw-r--'
@@ -303,25 +307,88 @@ class ZipArchive(object):
                     itemized[5] = 'p'
                     err += 'Path %s differs in permissions (%o vs %o)\n' % (path, mode, stat.S_IMODE(st.st_mode))
 
-            if self.file_args['owner']:
-                try:
-                    owner = pwd.getpwuid(st.st_uid).pw_name
-                except Exception as e:
-                    owner = st.st_uid
-                if self.file_args['owner'] != owner:
-                    change = True
-                    err += 'Path %s is owned by user %s, not by user %s as expected\n' % (path, owner, self.file_args['owner'])
-                    itemized[6] = 'o'
+            # Get file ownership
+            owner = uid = None
+            try:
+                owner = pwd.getpwuid(st.st_uid).pw_name
+            except Exception as e:
+                uid = st.st_uid
 
-            if self.file_args['group']:
+            # If we are root, and owner was requested
+            if os.getuid() == 0 and self.file_args['owner']:
                 try:
-                    group = pwd.getpwuid(st.st_uid).pw_name
-                except Exception as e:
-                    group = st.st_uid
-                if self.file_args['group'] != group:
-                    change = True
-                    err += 'Path %s is owned by group %s, not by group %s as expected\n' % (path, group, self.file_args['group'])
-                    itemized[6] = 'g'
+                    fpw = pwd.getpwname(self.file_args['owner'])
+                except:
+                    try:
+                        fpw = pwd.getpwuid(self.file_args['owner'])
+                    except:
+                        fpw = pwd.getpwuid(os.getuid())
+                fowner = fpw.pw_name
+                fuid = fpw.pw_uid
+
+            # If we are not root, and ownership was requested
+            elif self.file_args['owner']:
+                raise UnarchiveError('Cannot change ownership of %s to %s, as user' % (path, self.file_args['owner']))
+
+            # If we are not root, or if owner was not set
+            else:
+                try:
+                    fowner = pwd.getpwuid(os.getuid()).pw_name
+                except:
+                    pass
+                fuid = os.getuid()
+
+            if owner and owner != fowner:
+                change = True
+                err += 'Path %s is owned by user %s, not by user %s as expected\n' % (path, owner, fowner)
+                itemized[6] = 'o'
+            elif uid and uid != fuid:
+                change = True
+                err += 'Path %s is owned by uid %s, not by uid %s as expected\n' % (path, uid, fuid)
+                itemized[6] = 'o'
+
+            # Get file group ownership
+            group = gid = None
+            try:
+                group = grp.getgrgid(st.st_gid).gr_name
+            except:
+                gid = st.st_gid
+
+            # Get groups and group information
+            groups = os.getgroups()
+            try:
+                fgr = grp.getgrnam(self.file_args['group'])
+            except:
+                try:
+                    fgr = grp.getgrgid(self.file_args['group'])
+                except:
+                    fgr = grp.getgrgid(os.getgid())
+
+            # If group ownership was requested and we have the needed permissions
+            if self.file_args['group'] and fgr.gr_gid in groups:
+                fgroup = fgr.gr_name
+                fgid = fgr.gr_gid
+
+            # If we are not root, and we have not the needed permissions
+            elif self.file_args['group']:
+                raise UnarchiveError('Cannot change group ownership of %s to %s, as user' % (path, self.file_args['group']))
+
+            # If group ownership was not requested (use the user's default group)
+            else:
+                try:
+                    fgroup = grp.getgrgid(os.getgid()).gr_name
+                except:
+                    pass
+                fgid = os.getgid()
+
+            if group and group != fgroup:
+                change = True
+                err += 'Path %s is owned by group %s, not by group %s as expected\n' % (path, group, fgroup)
+                itemized[6] = 'g'
+            elif gid and gid != fgid:
+                change = True
+                err += 'Path %s is owned by gid %s, not by gid %s as expected\n' % (path, gid, fgid)
+                itemized[6] = 'g'
 
             if change:
                 if path not in self.includes:
@@ -578,8 +645,12 @@ def main():
         else:
             res_args['changed'] = True
 
+        if res_args['check_results'].get('diff', False):
+            res_args['diff'] = dict(prepared=res_args['check_results']['diff'])
+            del(res_args['check_results']['diff'])
+
     # Run only if we found differences (idempotence) or diff was missing
-    if res_args['check_results'].get('diff', True):
+    if res_args.get('diff', True):
         # do we need to change perms?
         for filename in handler.files_in_archive:
             file_args['path'] = os.path.join(dest, filename)
@@ -590,9 +661,6 @@ def main():
 
     if module.params['list_files']:
         res_args['files'] = handler.files_in_archive
-
-    if res_args['check_results'].get('diff', False):
-        res_args['diff'] = { 'prepared' : res_args['check_results']['diff'] }
 
     module.exit_json(**res_args)
 
