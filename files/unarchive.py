@@ -148,7 +148,7 @@ class ZipArchive(object):
         self.cmd_path = self.module.get_bin_path('unzip')
         self._files_in_archive = []
 
-    def _permstr_to_octal(self, modestr):
+    def _permstr_to_octal(self, modestr, umask):
         ''' Convert a Unix permission string (rw-r--r--) into a mode (0644) '''
         revstr = modestr[::-1]
         mode = 0
@@ -159,7 +159,7 @@ class ZipArchive(object):
         # The unzip utility does not support setting the stST bits
 #                if revstr[i+3*j] in ['s', 't', 'S', 'T' ]:
 #                    mode += 2**(9+j)
-        return mode
+        return ( mode & ~umask )
 
     @property
     def files_in_archive(self, force_refresh=False):
@@ -195,6 +195,61 @@ class ZipArchive(object):
         else:
             unarchived = False
 
+        # Get some information related to user/group ownership
+        umask = os.umask(0)
+        os.umask(umask)
+
+        # Get current user and group information
+        groups = os.getgroups()
+        run_uid = os.getuid()
+        run_gid = os.getgid()
+        try:
+            run_owner = pwd.getpwuid(run_uid).pw_name
+        except:
+            run_owner = run_uid
+        try:
+            run_group = grp.getgrgid(run_gid).gr_name
+        except:
+            run_group = run_gid
+
+        # Get future user ownership
+        fut_owner = fut_uid = None
+        if self.file_args['owner']:
+            try:
+                tpw = pwd.getpwname(self.file_args['owner'])
+            except:
+                try:
+                    tpw = pwd.getpwuid(self.file_args['owner'])
+                except:
+                    tpw = pwd.getpwuid(run_uid)
+            fut_owner = tpw.pw_name
+            fut_uid = tpw.pw_uid
+        else:
+            try:
+                fut_owner = run_owner
+            except:
+                pass
+            fut_uid = run_uid
+
+        # Get future group ownership
+        fut_group = fut_gid = None
+        if self.file_args['group']:
+            try:
+                tgr = grp.getgrnam(self.file_args['group'])
+            except:
+                try:
+                    tgr = grp.getgrgid(self.file_args['group'])
+                except:
+                    tgr = grp.getgrgid(run_gid)
+            fut_group = tgr.gr_name
+            fut_gid = tgr.gr_gid
+        else:
+            try:
+                fut_group = run_group
+            except:
+                pass
+            fut_gid = run_gid
+
         for line in old_out.splitlines():
             change = False
 
@@ -214,7 +269,7 @@ class ZipArchive(object):
             # Itemized change requires L for symlink
             if path[-1] == '/':
                 if ftype != 'd':
-                    err += 'Path %s incorrectly tagged as "%s", but is a directory.' % (path, ftype)
+                    err += 'Path %s incorrectly tagged as "%s", but is a directory.\n' % (path, ftype)
                 ftype = 'd'
             elif ftype == 'l':
                 ftype = 'L'
@@ -223,16 +278,18 @@ class ZipArchive(object):
 
             # Some files may be storing FAT permissions, not Unix permissions
             if len(permstr) == 6:
-                if permstr == 'rw----':
-                    permstr = 'rw-rw-r--'
-                elif permstr == 'rwx---':
-                    permstr = 'rwxrwxr-x'
+                if ftype == 'd':
+                    permstr = 'rwxrwxrwx'
+                elif ftype == 'f':
+                    permstr = 'rw-rw-rw-'
 
             # Test string conformity
             if len(permstr) != 9 or not ZIP_FILE_MODE_RE.match(permstr):
                 raise UnarchiveError('ZIP info perm format incorrect, %s' % permstr)
 
+            # DEBUG
 #            err += "%s%s %10d %s\n" % (ftype, permstr, size, path)
+
             dest = os.path.join(self.dest, path)
             try:
                 st = os.lstat(dest)
@@ -293,16 +350,13 @@ class ZipArchive(object):
                 err += 'File %s differs in size (%d vs %d)\n' % (path, size, st.st_size)
                 itemized[3] = 's'
 
-            mode = self._permstr_to_octal(permstr)
-
-#            diff += "Path %s compare %o vs %o\n" % (path, mode, stat.S_IMODE(st.st_mode))
-            if self.file_args['mode']:
-                if self.file_args['mode'] != stat.S_IMODE(st.st_mode):
+            if ftype != 'L':
+                mode = self._permstr_to_octal(permstr, umask)
+                if self.file_args['mode'] and  self.file_args['mode'] != stat.S_IMODE(st.st_mode):
                     change = True
                     err += 'Path %s differs in permissions (%o vs %o)\n' % (path, self.file_args['mode'], stat.S_IMODE(st.st_mode))
                     itemized[5] = 'p'
-            else:
-                if mode != stat.S_IMODE(st.st_mode):
+                elif mode != stat.S_IMODE(st.st_mode):
                     change = True
                     itemized[5] = 'p'
                     err += 'Path %s differs in permissions (%o vs %o)\n' % (path, mode, stat.S_IMODE(st.st_mode))
@@ -314,37 +368,17 @@ class ZipArchive(object):
             except Exception as e:
                 uid = st.st_uid
 
-            # If we are root, and owner was requested
-            if os.getuid() == 0 and self.file_args['owner']:
-                try:
-                    fpw = pwd.getpwname(self.file_args['owner'])
-                except:
-                    try:
-                        fpw = pwd.getpwuid(self.file_args['owner'])
-                    except:
-                        fpw = pwd.getpwuid(os.getuid())
-                fowner = fpw.pw_name
-                fuid = fpw.pw_uid
+            # If we are not root and requested owner is not our user, fail
+            if run_uid != 0 and (fut_owner != run_owner or fut_uid != run_uid):
+                raise UnarchiveError('Cannot change ownership of %s to %s, as user %s' % (path, fut_owner, run_owner))
 
-            # If we are not root, and ownership was requested
-            elif self.file_args['owner']:
-                raise UnarchiveError('Cannot change ownership of %s to %s, as user' % (path, self.file_args['owner']))
-
-            # If we are not root, or if owner was not set
-            else:
-                try:
-                    fowner = pwd.getpwuid(os.getuid()).pw_name
-                except:
-                    pass
-                fuid = os.getuid()
-
-            if owner and owner != fowner:
+            if owner and owner != fut_owner:
                 change = True
-                err += 'Path %s is owned by user %s, not by user %s as expected\n' % (path, owner, fowner)
+                err += 'Path %s is owned by user %s, not by user %s as expected\n' % (path, owner, fut_owner)
                 itemized[6] = 'o'
-            elif uid and uid != fuid:
+            elif uid and uid != fut_uid:
                 change = True
-                err += 'Path %s is owned by uid %s, not by uid %s as expected\n' % (path, uid, fuid)
+                err += 'Path %s is owned by uid %s, not by uid %s as expected\n' % (path, uid, fut_uid)
                 itemized[6] = 'o'
 
             # Get file group ownership
@@ -354,40 +388,16 @@ class ZipArchive(object):
             except:
                 gid = st.st_gid
 
-            # Get groups and group information
-            groups = os.getgroups()
-            try:
-                fgr = grp.getgrnam(self.file_args['group'])
-            except:
-                try:
-                    fgr = grp.getgrgid(self.file_args['group'])
-                except:
-                    fgr = grp.getgrgid(os.getgid())
+            if run_uid != 0 and fut_gid not in groups:
+                raise UnarchiveError('Cannot change group ownership of %s to %s, as user %s' % (path, fut_group, run_owner))
 
-            # If group ownership was requested and we have the needed permissions
-            if self.file_args['group'] and fgr.gr_gid in groups:
-                fgroup = fgr.gr_name
-                fgid = fgr.gr_gid
-
-            # If we are not root, and we have not the needed permissions
-            elif self.file_args['group']:
-                raise UnarchiveError('Cannot change group ownership of %s to %s, as user' % (path, self.file_args['group']))
-
-            # If group ownership was not requested (use the user's default group)
-            else:
-                try:
-                    fgroup = grp.getgrgid(os.getgid()).gr_name
-                except:
-                    pass
-                fgid = os.getgid()
-
-            if group and group != fgroup:
+            if group and group != fut_group:
                 change = True
-                err += 'Path %s is owned by group %s, not by group %s as expected\n' % (path, group, fgroup)
+                err += 'Path %s is owned by group %s, not by group %s as expected\n' % (path, group, fut_group)
                 itemized[6] = 'g'
-            elif gid and gid != fgid:
+            elif gid and gid != fut_gid:
                 change = True
-                err += 'Path %s is owned by gid %s, not by gid %s as expected\n' % (path, gid, fgid)
+                err += 'Path %s is owned by gid %s, not by gid %s as expected\n' % (path, gid, fut_gid)
                 itemized[6] = 'g'
 
             if change:
@@ -397,6 +407,9 @@ class ZipArchive(object):
 
         if self.includes:
             unarchived = False
+
+        # DEBUG
+        out = old_out + out
 
         return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
 
