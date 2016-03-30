@@ -120,7 +120,7 @@ from zipfile import ZipFile
 OWNER_DIFF_RE = re.compile(r': Uid differs$')
 GROUP_DIFF_RE = re.compile(r': Gid differs$')
 MODE_DIFF_RE = re.compile(r': Mode differs$')
-MODE_DIFF_RE = re.compile(r' is newer or same age.$')
+#NEWER_DIFF_RE = re.compile(r' is newer or same age.$')
 MISSING_FILE_RE = re.compile(r': Warning: Cannot stat: No such file or directory$')
 ZIP_FILE_MODE_RE = re.compile(r'([r-][w-][stx-]){3}')
 # When downloading an archive, how much of the archive to download before
