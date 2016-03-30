@@ -197,7 +197,7 @@ class ZipArchive(object):
     def is_unarchived(self):
         cmd = '%s -ZT -s "%s"' % (self.cmd_path, self.src)
         if self.excludes:
-            cmd += ' -x ' + ' '.join(self.excludes)
+            cmd += ' -x "' + '" "'.join(self.excludes) + '"'
         rc, out, err = self.module.run_command(cmd)
 
         old_out = out
@@ -454,7 +454,7 @@ class ZipArchive(object):
         if self.opts:
             cmd += ' ' + ' '.join(self.opts)
         if self.includes:
-            cmd += ' ' + ' '.join(self.includes)
+            cmd += ' "' + '" "'.join(self.includes) + '"'
         # We don't need to handle excluded files, since we simply do not include them
 #        if self.excludes:
 #            cmd += ' -x ' + ' '.join(self.excludes)
@@ -499,7 +499,7 @@ class TgzArchive(object):
         if self.opts:
             cmd += ' ' + ' '.join(self.opts)
         if self.excludes:
-            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+            cmd += ' --exclude="' + '" --exclude="'.join(self.excludes) + '"'
         cmd += ' -f "%s"' % self.src
         rc, out, err = self.module.run_command(cmd)
         if rc != 0:
@@ -523,10 +523,9 @@ class TgzArchive(object):
         if self.module.params['keep_newer']:
             cmd += ' --keep-newer-files'
         if self.excludes:
-            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+            cmd += ' --exclude="' + '" --exclude="'.join(self.excludes) + '"'
         cmd += ' -f "%s"' % self.src
         rc, out, err = self.module.run_command(cmd)
-        diff = ''
         # Check whether the differences are in something that we're
         # setting anyway
 
@@ -553,16 +552,16 @@ class TgzArchive(object):
         cmd = '%s -C "%s" -x%s' % (self.cmd_path, self.dest, self.zipflag)
         if self.opts:
             cmd += ' ' + ' '.join(self.opts)
-        if self.module.params['keep_newer']:
-            cmd += ' --keep-newer-files'
         if self.file_args['owner']:
             cmd += ' --owner="%s"' % self.file_args['owner']
         if self.file_args['group']:
             cmd += ' --group="%s"' % self.file_args['group']
         if self.file_args['mode']:
             cmd += ' --mode="%s"' % self.file_args['mode']
+        if self.module.params['keep_newer']:
+            cmd += ' --keep-newer-files'
         if self.excludes:
-            cmd += ' --exclude=' + ' --exclude='.join(self.excludes)
+            cmd += ' --exclude="' + '" --exclude="'.join(self.excludes) + '"'
         cmd += ' -f "%s"' % (self.src)
         rc, out, err = self.module.run_command(cmd, cwd=self.dest)
         return dict(cmd=cmd, rc=rc, out=out, err=err)
