@@ -78,7 +78,7 @@ options:
     default:
     required: false
     version_added: "2.1"
-author: "Dylan Martin (@pileofrogs)"
+author: "Dag Wieers (@dagwieers)"
 todo:
     - re-implement tar support using native tarfile module
     - re-implement zip support using native zipfile module
