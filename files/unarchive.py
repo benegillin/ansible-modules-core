@@ -80,18 +80,13 @@ options:
     version_added: "2.1"
 author: "Dylan Martin (@pileofrogs)"
 todo:
-    - detect changed/unchanged for .zip files
-    - implement CRC32 support for .zip files
-    - handle common unarchive args, like preserve owner/timestamp etc...
-    - rewrite gtar implementation wrt. file_common_args (and owner/group/mode)
-    - re-implement the zip support using native zipfile module
-    - implement check-mode
-    - implement diff-mode
+    - re-implement tar support using native tarfile module
+    - re-implement zip support using native zipfile module
 notes:
     - requires C(gtar)/C(unzip) command on target host
     - can handle I(gzip), I(bzip2) and I(xz) compressed as well as uncompressed tar files
     - detects type of archive automatically
-    - uses tar's C(--diff arg) to calculate if changed or not. If this C(arg) is not
+    - uses gtar's C(--diff arg) to calculate if changed or not. If this C(arg) is not
       supported, it will always unpack the archive
     - existing files/directories in the destination which are not in the archive
       are not touched.  This is the same behavior as a normal archive extraction
@@ -117,6 +112,7 @@ import pwd
 import grp
 import datetime
 import time
+import binascii
 from zipfile import ZipFile
 
 # String from tar that shows the tar contents are different from the
@@ -130,6 +126,10 @@ ZIP_FILE_MODE_RE = re.compile(r'([r-][w-][stx-]){3}')
 # When downloading an archive, how much of the archive to download before
 # saving to a tempfile (64k)
 BUFSIZE = 65536
+
+# Return a CRC32 checksum of a file
+def crc32(path):
+    return binascii.crc32(open(path).read()) & 0xffffffff
 
 class UnarchiveError(Exception):
     pass
@@ -147,6 +147,7 @@ class ZipArchive(object):
         self.includes = []
         self.cmd_path = self.module.get_bin_path('unzip')
         self._files_in_archive = []
+        self._infodict = dict()
 
     def _permstr_to_octal(self, modestr, umask):
         ''' Convert a Unix permission string (rw-r--r--) into a mode (0644) '''
@@ -160,6 +161,20 @@ class ZipArchive(object):
 #                if revstr[i+3*j] in ['s', 't', 'S', 'T' ]:
 #                    mode += 2**(9+j)
         return ( mode & ~umask )
+
+    def _crc32(self, path):
+        if self._infodict:
+            return self._infodict[path]
+
+        archive = ZipFile(self.src)
+        try:
+            for item in archive.infolist():
+                self._infodict[item.filename] = long(item.CRC)
+        except:
+            archive.close()
+            raise UnarchiveError('Unable to list files in the archive')
+
+        return self._infodict[path]
 
     @property
     def files_in_archive(self, force_refresh=False):
@@ -180,8 +195,6 @@ class ZipArchive(object):
         return self._files_in_archive
 
     def is_unarchived(self):
-        # TODO: It is possible to extract the CRC32 of each file and compare that
-        #       Problem is that parsing the unzip -Zv info is going to be ugly
         cmd = '%s -ZT -s "%s"' % (self.cmd_path, self.src)
         if self.excludes:
             cmd += ' -x ' + ' '.join(self.excludes)
@@ -304,6 +317,7 @@ class ZipArchive(object):
                 diff += '>%s++++++.?? %s\n' % (ftype, path)
                 continue
 
+            # Compare file types
             if ftype == 'd' and not stat.S_ISDIR(st.st_mode):
                 change = True
                 self.includes.append(path)
@@ -331,28 +345,40 @@ class ZipArchive(object):
             dt_object = datetime.datetime(*(time.strptime(pcs[6], '%Y%m%d.%H%M%S')[0:6]))
             timestamp = time.mktime(dt_object.timetuple())
 
-            # We do not compare directory mtime, since it changes with updates
-            if self.module.params['keep_newer']:
-                if stat.S_ISREG(st.st_mode) and timestamp > st.st_mtime:
-                    change = True
-                    self.includes.append(path)
-                    err += 'File %s is older, replacing file\n' % path
-                    itemized[4] = 't'
-                elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
-                    # Add to excluded files, ignore other changes
-                    out += 'File %s is newer, excluding file\n' % path
-                    continue
-            else:
-                if stat.S_ISREG(st.st_mode) and timestamp != st.st_mtime:
-                    change = True
-                    self.includes.append(path)
-                    err += 'File %s differs in mtime (%f vs %f)\n' % (path, timestamp, st.st_mtime)
-                    itemized[4] = 't'
+            # Compare file timestamps
+            if stat.S_ISREG(st.st_mode):
+                if self.module.params['keep_newer']:
+                    if timestamp > st.st_mtime:
+                        change = True
+                        self.includes.append(path)
+                        err += 'File %s is older, replacing file\n' % path
+                        itemized[4] = 't'
+                    elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
+                        # Add to excluded files, ignore other changes
+                        out += 'File %s is newer, excluding file\n' % path
+                        continue
+                else:
+                    if timestamp != st.st_mtime:
+                        change = True
+                        self.includes.append(path)
+                        err += 'File %s differs in mtime (%f vs %f)\n' % (path, timestamp, st.st_mtime)
+                        itemized[4] = 't'
 
+            # Compare file sizes
             if stat.S_ISREG(st.st_mode) and size != st.st_size:
                 change = True
                 err += 'File %s differs in size (%d vs %d)\n' % (path, size, st.st_size)
                 itemized[3] = 's'
+
+            # Compare file checksums
+            if stat.S_ISREG(st.st_mode):
+                crc = crc32(dest)
+                if crc != self._crc32(path):
+                    change = True
+                    err += 'File %s differs in CRC32 checksum (0x%08x vs 0x%08x)\n' % (path, self._crc32(path), crc)
+                    itemized[2] = 'c'
+
+            # Compare file permissions
 
             # Do not handle permissions of symlinks
             if ftype != 'L':
@@ -370,7 +396,7 @@ class ZipArchive(object):
                     itemized[5] = 'p'
                     err += 'Path %s differs in permissions (%o vs %o)\n' % (path, mode, stat.S_IMODE(st.st_mode))
 
-            # Get file ownership
+            # Compare file user ownership
             owner = uid = None
             try:
                 owner = pwd.getpwuid(st.st_uid).pw_name
@@ -390,7 +416,7 @@ class ZipArchive(object):
                 err += 'Path %s is owned by uid %s, not by uid %s as expected\n' % (path, uid, fut_uid)
                 itemized[6] = 'o'
 
-            # Get file group ownership
+            # Compare file group ownership
             group = gid = None
             try:
                 group = grp.getgrgid(st.st_gid).gr_name
@@ -409,6 +435,7 @@ class ZipArchive(object):
                 err += 'Path %s is owned by gid %s, not by gid %s as expected\n' % (path, gid, fut_gid)
                 itemized[6] = 'g'
 
+            # Register changed files and finalize diff output
             if change:
                 if path not in self.includes:
                     self.includes.append(path)
@@ -418,7 +445,7 @@ class ZipArchive(object):
             unarchived = False
 
         # DEBUG
-        out = old_out + out
+#        out = old_out + out
 
         return dict(unarchived=unarchived, rc=rc, out=out, err=err, cmd=cmd, diff=diff)
 
