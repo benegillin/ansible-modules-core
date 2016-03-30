@@ -616,11 +616,11 @@ def main():
     module = AnsibleModule(
         # not checking because of daisy chain to file module
         argument_spec = dict(
-            src               = dict(required=True),
-            original_basename = dict(required=False), # used to handle 'dest is a directory' via template, a slight hack
-            dest              = dict(required=True),
+            src               = dict(required=True, type='path'),
+            original_basename = dict(required=False, type='str'), # used to handle 'dest is a directory' via template, a slight hack
+            dest              = dict(required=True, type='path'),
             copy              = dict(default=True, type='bool'),
-            creates           = dict(required=False),
+            creates           = dict(required=False, type='path'),
             list_files        = dict(required=False, default=False, type='bool'),
             keep_newer        = dict(required=False, default=False, type='bool'),
             exclude           = dict(requited=False, default=[], type='list'),
@@ -632,8 +632,8 @@ def main():
 
     src    = os.path.expanduser(module.params['src'])
     dest   = os.path.expanduser(module.params['dest'])
-    file_args = module.load_file_common_arguments(module.params)
     copy   = module.params['copy']
+    file_args = module.load_file_common_arguments(module.params)
     # did tar file arrive?
     if not os.path.exists(src):
         if copy:
