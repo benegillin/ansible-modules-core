@@ -713,6 +713,9 @@ def main():
     if module.params['list_files']:
         res_args['files'] = handler.files_in_archive
 
+    if not res_args['changed']:
+        del(res_args['check_results'])
+
     module.exit_json(**res_args)
 
 # import module snippets
