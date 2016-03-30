@@ -297,6 +297,8 @@ class ZipArchive(object):
             if len(permstr) == 6:
                 if path[-1] == '/':
                     permstr = 'rwxrwxrwx'
+                elif permstr == 'rwx---':
+                    permstr = 'rwxrwxrwx'
                 else:
                     permstr = 'rw-rw-rw-'
 
