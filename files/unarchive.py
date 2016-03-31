@@ -685,8 +685,12 @@ def main():
     res_args = dict(handler=handler.__class__.__name__, dest=dest, src=src)
 
     # do we need to do unpack?
-    res_args['check_results'] = handler.is_unarchived()
-    if res_args['check_results']['unarchived']:
+    check_results = handler.is_unarchived()
+
+    # DEBUG
+#    res_args['check_results'] = check_results
+
+    if check_results['unarchived']:
         res_args['changed'] = False
     else:
         # do the unpack
@@ -699,9 +703,8 @@ def main():
         else:
             res_args['changed'] = True
 
-        if res_args['check_results'].get('diff', False):
-            res_args['diff'] = dict(prepared=res_args['check_results']['diff'])
-            del(res_args['check_results']['diff'])
+        if check_results.get('diff', False):
+            res_args['diff'] = { 'prepared': check_results['diff'] }
 
     # Run only if we found differences (idempotence) or diff was missing
     if res_args.get('diff', True):
@@ -715,9 +718,6 @@ def main():
 
     if module.params['list_files']:
         res_args['files'] = handler.files_in_archive
-
-    if not res_args['changed']:
-        del(res_args['check_results'])
 
     module.exit_json(**res_args)
 
