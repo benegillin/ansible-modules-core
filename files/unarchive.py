@@ -528,6 +528,7 @@ class TgzArchive(object):
             cmd += ' --exclude="' + '" --exclude="'.join(self.excludes) + '"'
         cmd += ' -f "%s"' % self.src
         rc, out, err = self.module.run_command(cmd)
+
         # Check whether the differences are in something that we're
         # setting anyway
 
@@ -535,12 +536,14 @@ class TgzArchive(object):
         unarchived = True
         old_out = out
         out = ''
+        run_uid = os.getuid()
+        # When unarchiving as a user, or when owner/group/mode is supplied --diff is insufficient
+        # Only way to be sure is to check request with what is on disk (as we do for zip)
+        # Leave this up to set_fs_attributes_if_different() instead of inducing a (false) change
         for line in old_out.splitlines() + err.splitlines():
-            # FIXME: if we are extracting as a user, we should not assume a different user is a change
-            if not self.file_args['owner'] and OWNER_DIFF_RE.search(line):
+            if run_uid == 0 and not self.file_args['owner'] and OWNER_DIFF_RE.search(line):
                 out += line + '\n'
-            # FIXME: if we are extracting as a user, we should not assume a different group is a change
-            if not self.file_args['group'] and GROUP_DIFF_RE.search(line):
+            if run_uid == 0 and not self.file_args['group'] and GROUP_DIFF_RE.search(line):
                 out += line + '\n'
             if not self.file_args['mode'] and MODE_DIFF_RE.search(line):
                 out += line + '\n'
