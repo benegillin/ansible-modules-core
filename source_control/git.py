@@ -375,23 +375,22 @@ def reset(git_path, module, dest):
     cmd = "%s reset --hard HEAD" % (git_path,)
     return module.run_command(cmd, check_rc=True, cwd=dest)
 
-def get_diff(module, git_path, dest, result):
+def get_diff(module, git_path, dest, before, after):
     ''' Return the difference between 2 versions '''
-    if result['before'] == None:
-        result['diff'] = { 'prepared': '>> Newly checked out %(after)s' % result }
-        return result
-    elif result['before'] != result['after']:
-        cmd = '%s diff %s %s' % (git_path, result['before'], result['after'])
+    if before == None:
+        return { 'prepared': '>> Newly checked out %s' % after }
+    elif before != after:
+        cmd = '%s diff %s %s' % (git_path, before, after)
         (rc, out, err) = module.run_command(cmd, check_rc=True, cwd=dest)
         if rc == 0 and out:
-            result['diff'] = { 'prepared': out }
+            return { 'prepared': out }
         elif rc == 0:
-            result['diff'] = { 'prepared': '>> No visual differences between %(before)s and %(after)s' % result }
+            return { 'prepared': '>> No visual differences between %s and %s' % (before, after) }
         elif err:
-            result['diff'] = { 'prepared': '>> Failed to get proper diff between %s and %s:\n>> %s' % (result['before'], result['after'], err) }
+            return { 'prepared': '>> Failed to get proper diff between %s and %s:\n>> %s' % (before, after, err) }
         else:
-            result['diff'] = { 'prepared': '>> Failed to get proper diff between %(before)s and %(after)s' % result }
-    return result
+            return { 'prepared': '>> Failed to get proper diff between %s and %s' % (before, after) }
+    return {}
 
 def get_remote_head(git_path, module, dest, version, remote, bare):
     cloning = False
@@ -831,7 +830,9 @@ def main():
             remote_head = get_remote_head(git_path, module, dest, version, repo, bare)
             result.update(changed=True, after=remote_head)
             if module._diff:
-                result = get_diff(module, git_path, dest, result)
+                diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                if diff:
+                    result['diff'] = diff
             module.exit_json(**result)
         # there's no git config, so clone
         clone(git_path, module, repo, dest, remote, depth, version, bare, reference, refspec, verify_commit)
@@ -862,7 +863,9 @@ def main():
             if local_mods:
                 result.update(changed=True, after=remote_head, msg='Local modifications exist')
                 if module._diff:
-                    result = get_diff(module, git_path, dest, result)
+                    diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                    if diff:
+                        result['diff'] = diff
                 module.exit_json(**result)
             elif version == 'HEAD':
                 # If the remote and local match and we're using the default of
@@ -881,7 +884,9 @@ def main():
             if module.check_mode:
                 result.update(changed=(result['before']!=remote_head), after=remote_head)
                 if module._diff:
-                    result = get_diff(module, git_path, dest, result)
+                    diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                    if diff:
+                        result['diff'] = diff
                 module.exit_json(**result)
             fetch(git_path, module, repo, dest, version, remote, depth, bare, refspec)
             repo_updated = True
@@ -914,7 +919,9 @@ def main():
     if result['before'] != result['after'] or local_mods or submodules_updated:
         result.update(changed=True)
         if module._diff:
-            result = get_diff(module, git_path, dest, result)
+            diff = get_diff(module, git_path, dest, result['before'], result['after'])
+            if diff:
+                result['diff'] = diff
 
     # cleanup the wrapper script
     if ssh_wrapper:
