@@ -375,13 +375,15 @@ def reset(git_path, module, dest):
     cmd = "%s reset --hard HEAD" % (git_path,)
     return module.run_command(cmd, check_rc=True, cwd=dest)
 
-def get_diff(module, git_path, dest, before, after):
+def get_diff(module, git_path, dest, repo, remote, depth, bare, before, after):
     ''' Return the difference between 2 versions '''
     if before == None:
         return { 'prepared': '>> Newly checked out %s' % after }
     elif before != after:
+        # Ensure we have the object we are referring to during git diff !
+        fetch(git_path, module, repo, dest, after, remote, depth, bare, '')
         cmd = '%s diff %s %s' % (git_path, before, after)
-        (rc, out, err) = module.run_command(cmd, check_rc=True, cwd=dest)
+        (rc, out, err) = module.run_command(cmd, cwd=dest)
         if rc == 0 and out:
             return { 'prepared': out }
         elif rc == 0:
@@ -830,7 +832,7 @@ def main():
             remote_head = get_remote_head(git_path, module, dest, version, repo, bare)
             result.update(changed=True, after=remote_head)
             if module._diff:
-                diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                diff = get_diff(module, git_path, dest, repo, remote, depth, bare, result['before'], result['after'])
                 if diff:
                     result['diff'] = diff
             module.exit_json(**result)
@@ -863,7 +865,7 @@ def main():
             if local_mods:
                 result.update(changed=True, after=remote_head, msg='Local modifications exist')
                 if module._diff:
-                    diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                    diff = get_diff(module, git_path, dest, repo, remote, depth, bare, result['before'], result['after'])
                     if diff:
                         result['diff'] = diff
                 module.exit_json(**result)
@@ -884,7 +886,7 @@ def main():
             if module.check_mode:
                 result.update(changed=(result['before']!=remote_head), after=remote_head)
                 if module._diff:
-                    diff = get_diff(module, git_path, dest, result['before'], result['after'])
+                    diff = get_diff(module, git_path, dest, repo, remote, depth, bare, result['before'], result['after'])
                     if diff:
                         result['diff'] = diff
                 module.exit_json(**result)
@@ -919,7 +921,7 @@ def main():
     if result['before'] != result['after'] or local_mods or submodules_updated:
         result.update(changed=True)
         if module._diff:
-            diff = get_diff(module, git_path, dest, result['before'], result['after'])
+            diff = get_diff(module, git_path, dest, repo, remote, depth, bare, result['before'], result['after'])
             if diff:
                 result['diff'] = diff
 
