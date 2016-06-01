@@ -312,7 +312,7 @@ class ZipArchive(object):
         for line in old_out.splitlines():
             change = False
 
-            pcs = line.split(None, 8)
+            pcs = line.split(None, 7)
 
             # Check first and seventh field in order to skip header/footer
             if len(pcs[0]) != 7 and len(pcs[0]) != 10: continue
