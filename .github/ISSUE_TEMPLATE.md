@@ -47,7 +47,7 @@ For new features, show how the feature would be used.
 <!--- What did you expect to happen when running the steps above? -->
 
 ##### ACTUAL RESULTS
-<!--- What actually happened? If possible run with high verbosity (-vvvv) -->
+<!--- What actually happened? If possible run with extra verbosity (-vvvv) -->
 
 <!--- Paste verbatim command output between quotes below -->
 ```
