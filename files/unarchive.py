@@ -449,7 +449,8 @@ class ZipArchive(object):
                     else:
                         try:
                             mode = int(self.file_args['mode'], 8)
-                        except Exception, e:
+                        except Exception:
+                            e = get_exception()
                             self.module.fail_json(path=path, msg="mode %(mode)s must be in octal form" % self.file_args, details=str(e))
                 # Only special files require no umask-handling
                 elif ztype == '?':
