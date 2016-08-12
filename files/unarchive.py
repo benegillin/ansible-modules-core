@@ -568,14 +568,15 @@ class TgzArchive(object):
         self.file_args = file_args
         self.opts = module.params['extra_opts']
         self.module = module
+        if self.module.check_mode:
+             self.module.exit_json(skipped=True, msg="remote module (%s) does not support check mode when using gtar" % self.module._name)
         self.excludes = [ path.rstrip('/') for path in self.module.params['exclude']]
-        # Prefer gtar (GNU tar) as it supports the compression options -zjJ
+        # Prefer gtar (GNU tar) as it supports the compression options -z, -j and -J
         self.cmd_path = self.module.get_bin_path('gtar', None)
         if not self.cmd_path:
             # Fallback to tar
             self.cmd_path = self.module.get_bin_path('tar')
         self.zipflag = '-z'
-        self.compress_mode = 'gz'
         self._files_in_archive = []
 
     @property
@@ -692,8 +693,6 @@ class TarArchive(TgzArchive):
         super(TarArchive, self).__init__(src, dest, file_args, module)
         # argument to tar
         self.zipflag = ''
-        # parameter for python tarfile library
-        self.compress_mode = ''
 
 
 # class to handle bzip2 compressed tar files
@@ -701,7 +700,6 @@ class TarBzipArchive(TgzArchive):
     def __init__(self, src, dest, file_args, module):
         super(TarBzipArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = '-j'
-        self.compress_mode = 'bz2'
 
 
 # class to handle xz compressed tar files
@@ -709,12 +707,11 @@ class TarXzArchive(TgzArchive):
     def __init__(self, src, dest, file_args, module):
         super(TarXzArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = '-J'
-        self.compress_mode = ''
 
 
 # try handlers in order and return the one that works or bail if none work
 def pick_handler(src, dest, file_args, module):
-    handlers = [TgzArchive, ZipArchive, TarArchive, TarBzipArchive, TarXzArchive]
+    handlers = [ZipArchive, TgzArchive, TarArchive, TarBzipArchive, TarXzArchive]
     for handler in handlers:
         obj = handler(src, dest, file_args, module)
         if obj.can_handle_archive():
@@ -739,9 +736,9 @@ def main():
             validate_certs    = dict(required=False, default=True, type='bool'),
         ),
         add_file_common_args = True,
-        mutually_exclusive   = [("copy", "remote_src"),]
-        # check-mode only works for zip files
-        #supports_check_mode = True,
+        mutually_exclusive   = [("copy", "remote_src"),],
+        # check-mode only works for zip files, we cover that later
+        supports_check_mode = True,
     )
 
     # We screenscrape a huge amount of commands so use C locale anytime we do
@@ -806,7 +803,9 @@ def main():
     # DEBUG
 #    res_args['check_results'] = check_results
 
-    if check_results['unarchived']:
+    if module.check_mode:
+        res_args['changed'] = not check_results['unarchived']
+    elif check_results['unarchived']:
         res_args['changed'] = False
     else:
         # do the unpack
@@ -819,11 +818,12 @@ def main():
         else:
             res_args['changed'] = True
 
-        if check_results.get('diff', False):
-            res_args['diff'] = { 'prepared': check_results['diff'] }
+    # Get diff if required
+    if check_results.get('diff', False):
+        res_args['diff'] = { 'prepared': check_results['diff'] }
 
     # Run only if we found differences (idempotence) or diff was missing
-    if res_args.get('diff', True):
+    if res_args.get('diff', True) and not module.check_mode:
         # do we need to change perms?
         for filename in handler.files_in_archive:
             file_args['path'] = os.path.join(dest, filename)
