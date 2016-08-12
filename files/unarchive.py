@@ -558,13 +558,17 @@ class TgzArchive(object):
         self.opts = module.params['extra_opts']
         self.module = module
         self.excludes = [ path.rstrip('/') for path in self.module.params['exclude']]
+
+        # Check-mode is not supported using gtar !
+        if self.module.check_mode:
+            self.module.exit_json(skipped=True, msg="remote module (%s) does not support check mode when using gtar" % self.module._name)
+
         # Prefer gtar (GNU tar) as it supports the compression options -zjJ
         self.cmd_path = self.module.get_bin_path('gtar', None)
         if not self.cmd_path:
             # Fallback to tar
             self.cmd_path = self.module.get_bin_path('tar')
         self.zipflag = 'z'
-        self.compress_mode = 'gz'
         self._files_in_archive = []
 
     @property
@@ -671,8 +675,6 @@ class TarArchive(TgzArchive):
         super(TarArchive, self).__init__(src, dest, file_args, module)
         # argument to tar
         self.zipflag = ''
-        # parameter for python tarfile library
-        self.compress_mode = ''
 
 
 # class to handle bzip2 compressed tar files
@@ -680,7 +682,6 @@ class TarBzipArchive(TgzArchive):
     def __init__(self, src, dest, file_args, module):
         super(TarBzipArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = 'j'
-        self.compress_mode = 'bz2'
 
 
 # class to handle xz compressed tar files
@@ -688,12 +689,11 @@ class TarXzArchive(TgzArchive):
     def __init__(self, src, dest, file_args, module):
         super(TarXzArchive, self).__init__(src, dest, file_args, module)
         self.zipflag = 'J'
-        self.compress_mode = ''
 
 
 # try handlers in order and return the one that works or bail if none work
 def pick_handler(src, dest, file_args, module):
-    handlers = [TgzArchive, ZipArchive, TarArchive, TarBzipArchive, TarXzArchive]
+    handlers = [ZipArchive, TgzArchive, TarArchive, TarBzipArchive, TarXzArchive]
     for handler in handlers:
         obj = handler(src, dest, file_args, module)
         if obj.can_handle_archive():
@@ -718,9 +718,9 @@ def main():
             validate_certs    = dict(required=False, default=True, type='bool'),
         ),
         add_file_common_args = True,
-        mutually_exclusive   = [("copy", "remote_src"),]
-        # check-mode only works for zip files
-        #supports_check_mode = True,
+        mutually_exclusive   = [("copy", "remote_src"),],
+        # check-mode only works for zip files, we handle gtar later
+        supports_check_mode = True,
     )
 
     # We screenscrape a huge amount of commands so use C locale anytime we do
