@@ -439,6 +439,7 @@ class ZipArchive(object):
                         itemized[4] = 't'
                     elif stat.S_ISREG(st.st_mode) and timestamp < st.st_mtime:
                         # Add to excluded files, ignore other changes
+                        self.excludes.append(path)
                         out += 'File %s is newer, excluding file\n' % path
                         self.excludes.append(path)
                         continue
