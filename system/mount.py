@@ -41,13 +41,15 @@ author:
   - Seth Vidal
 version_added: "0.6"
 options:
-  name:
+  path:
     description:
       - Path to the mount point (e.g. C(/mnt/files))
     required: true
+    aliases: [ dest, name ]
+    version_added: "historical"
   src:
     description:
-      - Device to be mounted on I(name). Required when I(state) set to
+      - Device to be mounted on I(path). Required when I(state) set to
         C(present) or C(mounted).
     required: false
     default: null
@@ -108,7 +110,7 @@ options:
 EXAMPLES = '''
 - name: Mount DVD read-only
   mount:
-    name: /mnt/dvd
+    path: /mnt/dvd
     src: /dev/sr0
     fstype: iso9660
     opts: ro
@@ -116,14 +118,14 @@ EXAMPLES = '''
 
 - name: Mount up device by label
   mount:
-    name: /srv/disk
+    path: /srv/disk
     src: LABEL=SOME_LABEL
     fstype: ext4
     state: present
 
 - name: Mount up device by UUID
   mount:
-    name: /home
+    path: /home
     src: UUID=b3e48f45-f933-4c8e-a700-22a159ec9077
     fstype: xfs
     opts: noatime
@@ -131,8 +133,8 @@ EXAMPLES = '''
 '''
 
 
-def write_fstab(lines, dest):
-    fs_w = open(dest, 'w')
+def write_fstab(lines, path):
+    fs_w = open(path, 'w')
 
     for l in lines:
         fs_w.write(l)
@@ -166,11 +168,11 @@ def set_mount(module, args):
     exists = False
     changed = False
     escaped_args = dict([(k, _escape_fstab(v)) for k, v in iteritems(args)])
-    new_line = '%(src)s %(name)s %(fstype)s %(opts)s %(dump)s %(passno)s\n'
+    new_line = '%(src)s %(path)s %(fstype)s %(opts)s %(dump)s %(passno)s\n'
 
     if get_platform() == 'SunOS':
         new_line = (
-            '%(src)s - %(name)s %(fstype)s %(passno)s %(boot)s %(opts)s\n')
+            '%(src)s - %(path)s %(fstype)s %(passno)s %(boot)s %(opts)s\n')
 
     for line in open(args['fstab'], 'r').readlines():
         if not line.strip():
@@ -197,7 +199,7 @@ def set_mount(module, args):
             (
                 ld['src'],
                 dash,
-                ld['name'],
+                ld['path'],
                 ld['fstype'],
                 ld['passno'],
                 ld['boot'],
@@ -206,7 +208,7 @@ def set_mount(module, args):
         else:
             (
                 ld['src'],
-                ld['name'],
+                ld['path'],
                 ld['fstype'],
                 ld['opts'],
                 ld['dump'],
@@ -214,7 +216,7 @@ def set_mount(module, args):
             ) = line.split()
 
         # Check if we found the correct line
-        if ld['name'] != escaped_args['name']:
+        if ld['path'] != escaped_args['path']:
             to_write.append(line)
 
             continue
@@ -244,7 +246,7 @@ def set_mount(module, args):
     if changed and not module.check_mode:
         write_fstab(to_write, args['fstab'])
 
-    return (args['name'], changed)
+    return (args['path'], changed)
 
 
 def unset_mount(module, args):
@@ -252,7 +254,7 @@ def unset_mount(module, args):
 
     to_write = []
     changed = False
-    escaped_name = _escape_fstab(args['name'])
+    escaped_path = _escape_fstab(args['path'])
 
     for line in open(args['fstab'], 'r').readlines():
         if not line.strip():
@@ -279,7 +281,7 @@ def unset_mount(module, args):
             (
                 ld['src'],
                 dash,
-                ld['name'],
+                ld['path'],
                 ld['fstype'],
                 ld['passno'],
                 ld['boot'],
@@ -288,14 +290,14 @@ def unset_mount(module, args):
         else:
             (
                 ld['src'],
-                ld['name'],
+                ld['path'],
                 ld['fstype'],
                 ld['opts'],
                 ld['dump'],
                 ld['passno']
             ) = line.split()
 
-        if ld['name'] != escaped_name:
+        if ld['path'] != escaped_path:
             to_write.append(line)
 
             continue
@@ -306,17 +308,17 @@ def unset_mount(module, args):
     if changed and not module.check_mode:
         write_fstab(to_write, args['fstab'])
 
-    return (args['name'], changed)
+    return (args['path'], changed)
 
 
 def mount(module, args):
     """Mount up a path or remount if needed."""
 
     mount_bin = module.get_bin_path('mount', required=True)
-    name = args['name']
+    path = args['path']
     cmd = [mount_bin]
 
-    if ismount(name):
+    if ismount(path):
         cmd += ['-o', 'remount']
 
     if args['fstab'] != '/etc/fstab':
@@ -325,7 +327,7 @@ def mount(module, args):
         elif get_platform() == 'Linux':
             cmd += ['-T', args['fstab']]
 
-    cmd += [name]
+    cmd += [path]
 
     rc, out, err = module.run_command(cmd)
 
@@ -335,11 +337,11 @@ def mount(module, args):
         return rc, out+err
 
 
-def umount(module, dest):
+def umount(module, path):
     """Unmount a path."""
 
     umount_bin = module.get_bin_path('umount', required=True)
-    cmd = [umount_bin, dest]
+    cmd = [umount_bin, path]
 
     rc, out, err = module.run_command(cmd)
 
@@ -353,18 +355,18 @@ def umount(module, dest):
 # from @jupeter -- https://github.com/ansible/ansible-modules-core/pull/2923
 # @jtyr -- https://github.com/ansible/ansible-modules-core/issues/4439
 # and @abadger to relicense from GPLv3+
-def is_bind_mounted(module, linux_mounts, dest, src=None, fstype=None):
-    """Return whether the dest is bind mounted
+def is_bind_mounted(module, linux_mounts, path, src=None, fstype=None):
+    """Return whether the path is bind mounted
 
     :arg module: The AnsibleModule (used for helper functions)
-    :arg dest: The directory to be mounted under. This is the primary means
-        of identifying whether the destination is mounted.
+    :arg path: The directory to be mounted under. This is the primary means
+        of identifying whether the path is mounted.
     :kwarg src: The source directory. If specified, this is used to help
         ensure that we are detecting that the correct source is mounted there.
     :kwarg fstype: The filesystem type. If specified this is also used to
         help ensure that we are detecting the right mount.
     :kwarg linux_mounts: Cached list of mounts for Linux.
-    :returns: True if the dest is mounted with src otherwise False.
+    :returns: True if the path is mounted with src otherwise False.
     """
 
     is_mounted = False
@@ -372,11 +374,11 @@ def is_bind_mounted(module, linux_mounts, dest, src=None, fstype=None):
     if get_platform() == 'Linux':
         if src is None:
             # That's for unmounted/absent
-            if dest in linux_mounts:
+            if path in linux_mounts:
                 is_mounted = True
         else:
             # That's for mounted
-            if dest in linux_mounts and linux_mounts[dest]['src'] == src:
+            if path in linux_mounts and linux_mounts[path]['src'] == src:
                 is_mounted = True
     else:
         bin_path = module.get_bin_path('mount', required=True)
@@ -392,7 +394,7 @@ def is_bind_mounted(module, linux_mounts, dest, src=None, fstype=None):
 
             if (
                     (arguments[0] == src or src is None) and
-                    arguments[2] == dest and
+                    arguments[2] == path and
                     (arguments[4] == fstype or fstype is None)):
                 is_mounted = True
 
@@ -527,7 +529,7 @@ def main():
             dump=dict(),
             fstab=dict(default='/etc/fstab'),
             fstype=dict(),
-            name=dict(required=True, type='path'),
+            path=dict(required=True, aliases=['dest', 'name'], type='path'),
             opts=dict(),
             passno=dict(type='str'),
             src=dict(type='path'),
@@ -544,12 +546,12 @@ def main():
 
     changed = False
     # solaris args:
-    #   name, src, fstype, opts, boot, passno, state, fstab=/etc/vfstab
+    #   path, src, fstype, opts, boot, passno, state, fstab=/etc/vfstab
     # linux args:
-    #   name, src, fstype, opts, dump, passno, state, fstab=/etc/fstab
+    #   path, src, fstype, opts, dump, passno, state, fstab=/etc/fstab
     if get_platform() == 'SunOS':
         args = dict(
-            name=module.params['name'],
+            path=module.params['path'],
             opts='-',
             passno='-',
             fstab='/etc/vfstab',
@@ -557,7 +559,7 @@ def main():
         )
     else:
         args = dict(
-            name=module.params['name'],
+            path=module.params['path'],
             opts='defaults',
             dump='0',
             passno='0',
@@ -602,48 +604,48 @@ def main():
     #   changed in fstab then remount it.
 
     state = module.params['state']
-    name = module.params['name']
+    path = module.params['path']
 
     if state == 'absent':
-        name, changed = unset_mount(module, args)
+        path, changed = unset_mount(module, args)
 
         if changed and not module.check_mode:
-            if ismount(name) or is_bind_mounted(module, linux_mounts, name):
-                res, msg = umount(module, name)
+            if ismount(path) or is_bind_mounted(module, linux_mounts, path):
+                res, msg = umount(module, path)
 
                 if res:
                     module.fail_json(
-                        msg="Error unmounting %s: %s" % (name, msg))
+                        msg="Error unmounting %s: %s" % (path, msg))
 
-            if os.path.exists(name):
+            if os.path.exists(path):
                 try:
-                    os.rmdir(name)
+                    os.rmdir(path)
                 except (OSError, IOError):
                     e = get_exception()
-                    module.fail_json(msg="Error rmdir %s: %s" % (name, str(e)))
+                    module.fail_json(msg="Error rmdir %s: %s" % (path, str(e)))
     elif state == 'unmounted':
-        if ismount(name) or is_bind_mounted(module, linux_mounts, name):
+        if ismount(path) or is_bind_mounted(module, linux_mounts, path):
             if not module.check_mode:
-                res, msg = umount(module, name)
+                res, msg = umount(module, path)
 
                 if res:
                     module.fail_json(
-                        msg="Error unmounting %s: %s" % (name, msg))
+                        msg="Error unmounting %s: %s" % (path, msg))
 
             changed = True
     elif state == 'mounted':
-        if not os.path.exists(name) and not module.check_mode:
+        if not os.path.exists(path) and not module.check_mode:
             try:
-                os.makedirs(name)
+                os.makedirs(path)
             except (OSError, IOError):
                 e = get_exception()
                 module.fail_json(
-                    msg="Error making dir %s: %s" % (name, str(e)))
+                    msg="Error making dir %s: %s" % (path, str(e)))
 
-        name, changed = set_mount(module, args)
+        path, changed = set_mount(module, args)
         res = 0
 
-        if ismount(name):
+        if ismount(path):
             if changed and not module.check_mode:
                 res, msg = mount(module, args)
                 changed = True
@@ -651,7 +653,7 @@ def main():
             changed = True
 
             if is_bind_mounted(
-                    module, linux_mounts, name, args['src'], args['fstype']):
+                    module, linux_mounts, path, args['src'], args['fstype']):
                 changed = False
 
             if changed and not module.check_mode:
@@ -663,9 +665,9 @@ def main():
                 res, msg = mount(module, args)
 
         if res:
-            module.fail_json(msg="Error mounting %s: %s" % (name, msg))
+            module.fail_json(msg="Error mounting %s: %s" % (path, msg))
     elif state == 'present':
-        name, changed = set_mount(module, args)
+        path, changed = set_mount(module, args)
     else:
         module.fail_json(msg='Unexpected position reached')
 

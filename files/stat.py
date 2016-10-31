@@ -27,6 +27,8 @@ options:
       - The full path of the file/object to get the facts of
     required: true
     default: null
+    aliases: ['dest', 'name']
+    version_added: "historical"
   follow:
     description:
       - Whether to follow symlinks
@@ -397,7 +399,7 @@ def format_output(module, path, st):
 def main():
     module = AnsibleModule(
         argument_spec=dict(
-            path=dict(required=True, type='path'),
+            path=dict(required=True, aliases=['dest', 'name'], type='path'),
             follow=dict(default='no', type='bool'),
             get_md5=dict(default='yes', type='bool'),
             get_checksum=dict(default='yes', type='bool'),

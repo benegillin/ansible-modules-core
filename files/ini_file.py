@@ -32,11 +32,13 @@ description:
      - Before version 2.0, comments are discarded when the source file is read, and therefore will not show up in the destination file.
 version_added: "0.9"
 options:
-  dest:
+  path:
     description:
       - Path to the INI-style file; this file is created if required
     required: true
     default: null
+    aliases: ['dest', 'name']
+    version_added: "historical"
   section:
     description:
       - Section name in INI file. This is added if C(state=present) automatically when
@@ -100,9 +102,9 @@ author:
 
 EXAMPLES = '''
 # Ensure "fav=lemonade is in section "[drinks]" in specified file
-- ini_file: dest=/etc/conf section=drinks option=fav value=lemonade mode=0600 backup=yes
+- ini_file: path=/etc/conf section=drinks option=fav value=lemonade mode=0600 backup=yes
 
-- ini_file: dest=/etc/anotherconf
+- ini_file: path=/etc/anotherconf
             section=drinks
             option=temperature
             value=cold
@@ -250,7 +252,7 @@ def main():
 
     module = AnsibleModule(
         argument_spec = dict(
-            dest = dict(required=True),
+            path = dict(required=True, aliases=['dest', 'name'], type='path'),
             section = dict(required=True),
             option = dict(required=False),
             value = dict(required=False),
@@ -263,7 +265,7 @@ def main():
         supports_check_mode = True
     )
 
-    dest = os.path.expanduser(module.params['dest'])
+    path = os.path.expanduser(module.params['path'])
     section = module.params['section']
     option = module.params['option']
     value = module.params['value']
@@ -272,13 +274,13 @@ def main():
     no_extra_spaces = module.params['no_extra_spaces']
     create = module.params['create']
 
-    (changed,backup_file,diff,msg) = do_ini(module, dest, section, option, value, state, backup, no_extra_spaces, create)
+    (changed,backup_file,diff,msg) = do_ini(module, path, section, option, value, state, backup, no_extra_spaces, create)
 
-    if not module.check_mode and os.path.exists(dest):
+    if not module.check_mode and os.path.exists(path):
         file_args = module.load_file_common_arguments(module.params)
         changed = module.set_fs_attributes_if_different(file_args, changed)
 
-    results = { 'changed': changed, 'msg': msg, 'dest': dest, 'diff': diff }
+    results = { 'changed': changed, 'msg': msg, 'path': path, 'diff': diff }
     if backup_file is not None:
         results['backup_file'] = backup_file
 

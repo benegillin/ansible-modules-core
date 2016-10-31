@@ -41,6 +41,7 @@ options:
     required: true
     default: []
     aliases: ['dest', 'name']
+    version_added: "historical"
   state:
     description:
       - If C(directory), all immediate subdirectories will be created if they

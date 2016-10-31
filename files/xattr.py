@@ -23,12 +23,13 @@ description:
      - Manages filesystem user defined extended attributes, requires that they are enabled
        on the target filesystem and that the setfattr/getfattr utilities are present.
 options:
-  name:
+  path:
     required: true
     default: None
-    aliases: ['path']
+    aliases: ['dest', 'name']
     description:
       - The full path of the file/object to get the facts of
+    version_added: "historical"
   key:
     required: false
     default: None
@@ -63,13 +64,13 @@ author: "Brian Coca (@bcoca)"
 
 EXAMPLES = '''
 # Obtain the extended attributes  of /etc/foo.conf
-- xattr: name=/etc/foo.conf
+- xattr: path=/etc/foo.conf
 
 # Sets the key 'foo' to value 'bar'
 - xattr: path=/etc/foo.conf key=user.foo value=bar
 
 # Removes the key 'foo'
-- xattr: name=/etc/foo.conf key=user.foo state=absent
+- xattr: path=/etc/foo.conf key=user.foo state=absent
 '''
 
 import operator
@@ -145,7 +146,7 @@ def _run_xattr(module,cmd,check_rc=True):
 def main():
     module = AnsibleModule(
         argument_spec = dict(
-            name = dict(required=True, aliases=['path'], type='path'),
+            path = dict(required=True, aliases=['dest', 'name'], type='path'),
             key = dict(required=False, default=None, type='str'),
             value = dict(required=False, default=None, type='str'),
             state = dict(required=False, default='read', choices=[ 'read', 'present', 'all', 'keys', 'absent' ], type='str'),
@@ -153,7 +154,7 @@ def main():
         ),
         supports_check_mode=True,
     )
-    path = module.params.get('name')
+    path = module.params.get('path')
     key = module.params.get('key')
     value = module.params.get('value')
     state = module.params.get('state')

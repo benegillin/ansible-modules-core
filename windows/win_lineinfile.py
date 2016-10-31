@@ -26,9 +26,9 @@ description:
   - This is primarily useful when you want to change a single line in a file only.
 version_added: "2.0"
 options:
-  dest:
+  path:
     required: true
-    aliases: [ name, destfile ]
+    aliases: [ dest, destfile, name ]
     description:
       - The path of the file to modify.
       - Note that the Windows path delimiter '\' must be escaped as '\\' (see examples below)
@@ -100,20 +100,20 @@ options:
 """
 
 EXAMPLES = """
-- win_lineinfile: dest=C:\\temp\\example.conf regexp=^name= line="name=JohnDoe"
+- win_lineinfile: path=C:\\temp\\example.conf regexp=^name= line="name=JohnDoe"
 
-- win_lineinfile: dest=C:\\temp\\example.conf state=absent regexp="^name="
+- win_lineinfile: path=C:\\temp\\example.conf state=absent regexp="^name="
 
-- win_lineinfile: dest=C:\\temp\\example.conf regexp='^127\.0\.0\.1' line='127.0.0.1 localhost'
+- win_lineinfile: path=C:\\temp\\example.conf regexp='^127\.0\.0\.1' line='127.0.0.1 localhost'
 
-- win_lineinfile: dest=C:\\temp\\httpd.conf regexp="^Listen " insertafter="^#Listen " line="Listen 8080"
+- win_lineinfile: path=C:\\temp\\httpd.conf regexp="^Listen " insertafter="^#Listen " line="Listen 8080"
 
-- win_lineinfile: dest=C:\\temp\\services regexp="^# port for http" insertbefore="^www.*80/tcp" line="# port for http by default"
+- win_lineinfile: path=C:\\temp\\services regexp="^# port for http" insertbefore="^www.*80/tcp" line="# port for http by default"
 
 # Create file if it doesn't exist with a specific encoding
-- win_lineinfile: dest=C:\\temp\\utf16.txt create="yes" encoding="utf-16" line="This is a utf-16 encoded file"
+- win_lineinfile: path=C:\\temp\\utf16.txt create="yes" encoding="utf-16" line="This is a utf-16 encoded file"
 
 # Add a line to a file and ensure the resulting file uses unix line separators
-- win_lineinfile: dest=C:\\temp\\testfile.txt line="Line added to file" newline="unix"
+- win_lineinfile: path=C:\\temp\\testfile.txt line="Line added to file" newline="unix"
 
 """
